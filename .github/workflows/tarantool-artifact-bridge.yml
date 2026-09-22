@@ -1,0 +1,32 @@
+name: Temporary Tarantool Artifact Bridge
+
+on:
+  push:
+    paths:
+      - .github/workflows/tarantool-artifact-bridge.yml
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download Debian 13 Tarantool packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          base=https://deb.debian.org/debian/pool/main/t/tarantool
+          curl -fL --retry 4 "$base/tarantool_2.6.0-1.4+b1_amd64.deb" -o out/tarantool_2.6.0-1.4+b1_amd64.deb
+          curl -fL --retry 4 "$base/tarantool-common_2.6.0-1.4_all.deb" -o out/tarantool-common_2.6.0-1.4_all.deb
+          sha256sum out/*.deb | tee out/SHA256SUMS
+          dpkg-deb -I out/tarantool_2.6.0-1.4+b1_amd64.deb > out/tarantool-control.txt
+      - name: Upload bridge artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarantool-debian13-amd64
+          path: out/
+          if-no-files-found: error
+          retention-days: 1

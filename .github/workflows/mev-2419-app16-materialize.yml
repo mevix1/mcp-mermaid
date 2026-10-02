@@ -1,0 +1,75 @@
+name: MEV-2419 App16 materialize
+
+on:
+  push:
+    branches:
+      - temp/mev-2419-app16-materialize
+
+permissions:
+  contents: read
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout transport branch
+        uses: actions/checkout@v4
+
+      - name: Checkout exact public upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: open-mercato/open-mercato
+          ref: 3019dc2328af92dd46d75243d9ba0197d0c0ed07
+          path: source
+          fetch-depth: 1
+
+      - name: Verify exact Git blobs and assemble artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/apps/mercato/src/i18n
+          mkdir -p artifact/packages/create-app/template/src/i18n
+          mkdir -p artifact/receipts
+
+          locales=(de en es ko pl)
+          expected=(
+            981bc56a167565752cf687af27e9f7f628b582dc
+            acf0aa560cfa3413f0aeaa40969a4b70712167f1
+            39f1cc40b11a5ee1198d38417dc485356f8d70fb
+            ff1759a78aef4a27e204c21877312bfd7f5f1cc8
+            bc50d14d69d2f4249656abbb1b3d92d4a0f4ef74
+          )
+          sizes=(72916 67917 72371 75719 72722)
+
+          for i in "${!locales[@]}"; do
+            locale="${locales[$i]}"
+            app="source/apps/mercato/src/i18n/${locale}.json"
+            template="source/packages/create-app/template/src/i18n/${locale}.json"
+            test -f "$app"
+            test -f "$template"
+            app_hash="$(git -C source hash-object "apps/mercato/src/i18n/${locale}.json")"
+            template_hash="$(git -C source hash-object "packages/create-app/template/src/i18n/${locale}.json")"
+            test "$app_hash" = "${expected[$i]}"
+            test "$template_hash" = "${expected[$i]}"
+            test "$(wc -c < "$app")" -eq "${sizes[$i]}"
+            test "$(wc -c < "$template")" -eq "${sizes[$i]}"
+            cmp -- "$app" "$template"
+            cp -- "$app" "artifact/apps/mercato/src/i18n/${locale}.json"
+            cp -- "$template" "artifact/packages/create-app/template/src/i18n/${locale}.json"
+            printf '%s  apps/mercato/src/i18n/%s.json\n' "$app_hash" "$locale" >> artifact/receipts/git-blob-sha1.txt
+            printf '%s  packages/create-app/template/src/i18n/%s.json\n' "$template_hash" "$locale" >> artifact/receipts/git-blob-sha1.txt
+          done
+
+          git -C source rev-parse HEAD > artifact/receipts/upstream-commit.txt
+          git -C source rev-parse HEAD^{tree} > artifact/receipts/upstream-tree.txt
+          find artifact/apps artifact/packages -type f -print0 | sort -z | xargs -0 sha256sum > artifact/receipts/payload-sha256.txt
+          printf '%s\n' 'private P object IDs were independently pre-qualified as identical to these five blobs' > artifact/receipts/provenance-note.txt
+
+      - name: Upload exact dictionary bytes
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-2419-app16-exact-dictionaries
+          path: artifact
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3

@@ -1,0 +1,132 @@
+name: MEV-2419 App16 exact blob bridge
+
+on:
+  push:
+    branches:
+      - ops/mev-2419-app16-blob-bridge-20261002
+
+permissions:
+  contents: read
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Materialize and verify exact Git blobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/apps/mercato/src/i18n
+          mkdir -p artifact/packages/create-app/template/src/i18n
+
+          cat > /tmp/materialize.py <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import urllib.request
+
+          REPO = "open-mercato/open-mercato"
+          PRIVATE_P = "2a0c71260af1c54e24fe311ec3aecf249f701181"
+          EXPECTED_TREE = "cdc92f2479ec804b86fba99c3a00b3d29e31517e"
+          BLOBS = {
+              "de": ("981bc56a167565752cf687af27e9f7f628b582dc", 72916),
+              "en": ("acf0aa560cfa3413f0aeaa40969a4b70712167f1", 67917),
+              "es": ("39f1cc40b11a5ee1198d38417dc485356f8d70fb", 72371),
+              "ko": ("ff1759a78aef4a27e204c21877312bfd7f5f1cc8", 75719),
+              "pl": ("bc50d14d69d2f4249656abbb1b3d92d4a0f4ef74", 72722),
+          }
+
+          def git_blob_sha(data: bytes) -> str:
+              return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+          def git_tree_sha(rows):
+              body = b""
+              for name, oid in sorted(rows, key=lambda row: row[0].encode()):
+                  body += f"100644 {name}\0".encode() + bytes.fromhex(oid)
+              return hashlib.sha1(f"tree {len(body)}\0".encode() + body).hexdigest()
+
+          token = os.environ.get("GH_TOKEN", "")
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "mev-2419-app16-blob-bridge",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          if token:
+              headers["Authorization"] = f"Bearer {token}"
+
+          manifest = {
+              "schemaVersion": 1,
+              "kind": "EXACT_GIT_BLOB_MATERIALIZATION",
+              "publicObjectStoreRepository": REPO,
+              "privateSourceBaseline": PRIVATE_P,
+              "expectedSubtreeOid": EXPECTED_TREE,
+              "files": [],
+          }
+          rows = []
+          roots = [
+              "apps/mercato/src/i18n",
+              "packages/create-app/template/src/i18n",
+          ]
+
+          for locale, (expected_oid, expected_size) in BLOBS.items():
+              url = f"https://api.github.com/repos/{REPO}/git/blobs/{expected_oid}"
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  payload = json.load(response)
+              data = base64.b64decode(payload["content"].replace("\n", ""))
+              actual_oid = git_blob_sha(data)
+              if actual_oid != expected_oid:
+                  raise SystemExit(f"blob SHA mismatch for {locale}: {actual_oid} != {expected_oid}")
+              if len(data) != expected_size:
+                  raise SystemExit(f"size mismatch for {locale}: {len(data)} != {expected_size}")
+              json.loads(data.decode("utf-8"))
+              rows.append((f"{locale}.json", actual_oid))
+              for root in roots:
+                  path = pathlib.Path("artifact") / root / f"{locale}.json"
+                  path.write_bytes(data)
+                  manifest["files"].append({
+                      "path": str(path.relative_to("artifact")),
+                      "locale": locale,
+                      "oid": actual_oid,
+                      "size": len(data),
+                      "sha256": hashlib.sha256(data).hexdigest(),
+                  })
+
+          actual_tree = git_tree_sha(rows)
+          if actual_tree != EXPECTED_TREE:
+              raise SystemExit(f"tree mismatch: {actual_tree} != {EXPECTED_TREE}")
+          manifest["actualSubtreeOid"] = actual_tree
+          manifest["uniqueBlobs"] = len(BLOBS)
+          manifest["materializedFiles"] = len(manifest["files"])
+          manifest["appTemplateParity"] = "BYTE_IDENTICAL_5_OF_5"
+          pathlib.Path("artifact/materialization-manifest.json").write_text(
+              json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          python /tmp/materialize.py
+          find artifact -type f -print0 | sort -z | xargs -0 sha256sum > artifact/SHA256SUMS
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m = json.loads(Path('artifact/materialization-manifest.json').read_text())
+          assert m['materializedFiles'] == 10
+          assert m['uniqueBlobs'] == 5
+          assert m['actualSubtreeOid'] == 'cdc92f2479ec804b86fba99c3a00b3d29e31517e'
+          assert m['appTemplateParity'] == 'BYTE_IDENTICAL_5_OF_5'
+          print(json.dumps(m, indent=2, ensure_ascii=False))
+          PY
+
+      - name: Upload exact source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-2419-app16-exact-source
+          path: artifact/
+          retention-days: 7
+          if-no-files-found: error

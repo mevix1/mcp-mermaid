@@ -1,0 +1,68 @@
+name: MEV-2419 App16 source materializer
+
+on:
+  push:
+    branches:
+      - tmp/mev-2419-app16-materialize
+    paths:
+      - .github/workflows/mev-2419-app16-materialize.yml
+
+permissions:
+  contents: read
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Materialize immutable public upstream bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          readonly SOURCE_COMMIT='8b492325d3db29c431cca43674dcc93f894110be'
+          readonly SOURCE_TAG='v0.7.0'
+          readonly REPO='https://github.com/open-mercato/open-mercato.git'
+
+          git clone --depth 1 --branch "$SOURCE_TAG" "$REPO" source
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_COMMIT"
+
+          mkdir -p artifact/apps/mercato/src/i18n
+          mkdir -p artifact/packages/create-app/template/src/i18n
+
+          cat > expected.tsv <<'EOF'
+          de	981bc56a167565752cf687af27e9f7f628b582dc	72916
+          en	acf0aa560cfa3413f0aeaa40969a4b70712167f1	67917
+          es	39f1cc40b11a5ee1198d38417dc485356f8d70fb	72371
+          ko	ff1759a78aef4a27e204c21877312bfd7f5f1cc8	75719
+          pl	bc50d14d69d2f4249656abbb1b3d92d4a0f4ef74	72722
+          EOF
+
+          while IFS=$'\t' read -r locale expected_oid expected_size; do
+            src="source/apps/mercato/src/i18n/${locale}.json"
+            test -f "$src"
+            test "$(wc -c < "$src" | tr -d ' ')" = "$expected_size"
+            test "$(git -C source hash-object "apps/mercato/src/i18n/${locale}.json")" = "$expected_oid"
+            cp "$src" "artifact/apps/mercato/src/i18n/${locale}.json"
+            cp "$src" "artifact/packages/create-app/template/src/i18n/${locale}.json"
+          done < expected.tsv
+
+          while IFS=$'\t' read -r locale expected_oid expected_size; do
+            app="artifact/apps/mercato/src/i18n/${locale}.json"
+            template="artifact/packages/create-app/template/src/i18n/${locale}.json"
+            cmp "$app" "$template"
+            test "$(git hash-object "$app")" = "$expected_oid"
+            test "$(git hash-object "$template")" = "$expected_oid"
+          done < expected.tsv
+
+          cp expected.tsv artifact/expected.tsv
+          printf '%s\n' "$SOURCE_COMMIT" > artifact/source-commit.txt
+          printf '%s\n' "$SOURCE_TAG" > artifact/source-tag.txt
+          find artifact -type f -print0 | sort -z | xargs -0 sha256sum > artifact/SHA256SUMS
+
+      - name: Upload exact App16 dictionaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-2419-app16-exact-dictionaries
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 1

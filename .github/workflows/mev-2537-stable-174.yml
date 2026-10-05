@@ -1,0 +1,67 @@
+name: MEV-2537 stable TLA+ 1.7.4 replay
+
+on:
+  push:
+    branches:
+      - lab/mev-2537-stable-174-replay
+    paths:
+      - 'lab/mev-2537/source-bundle.tar.gz.b64'
+      - '.github/workflows/mev-2537-stable-174.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stable-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact lab branch
+        uses: actions/checkout@v4
+
+      - name: Decode exact MEV-2537 source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          base64 --decode lab/mev-2537/source-bundle.tar.gz.b64 > work/source-bundle.tar.gz
+          echo 'bd4a2caaa63306b37015ebb9b697a08ab8a5a3be440c6fe40429f09bcc83b1d8  work/source-bundle.tar.gz' | sha256sum -c -
+          tar -xzf work/source-bundle.tar.gz -C work
+
+      - name: Run official stable TLA+ Tools 1.7.4 replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash work/ci/run_stable_replay.sh
+
+      - name: Write execution receipt
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path('work/ci-artifacts/GITHUB-ACTIONS-RECEIPT.json')
+          p.parent.mkdir(parents=True, exist_ok=True)
+          p.write_text(json.dumps({
+            'schema': 'avision-research.mev-2537.stable-replay-ci.v1',
+            'repository': os.environ['GITHUB_REPOSITORY'],
+            'workflow': os.environ['GITHUB_WORKFLOW'],
+            'run_id': os.environ['GITHUB_RUN_ID'],
+            'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+            'sha': os.environ['GITHUB_SHA'],
+            'ref': os.environ['GITHUB_REF'],
+            'runner_os': os.environ['RUNNER_OS'],
+            'runner_arch': os.environ['RUNNER_ARCH'],
+          }, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Upload exact replay artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-2537-stable-1.7.4-replay
+          path: work/ci-artifacts
+          if-no-files-found: error
+          retention-days: 30
